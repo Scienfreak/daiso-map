@@ -89,23 +89,27 @@ export async function POST(request: NextRequest) {
       }
 
       for (const s of allStores) {
+        const lat = Number(s.strLttd);
+        const lng = Number(s.strLitd);
+        if (!s.strCd || isNaN(lat) || isNaN(lng)) continue;
         if (!storeMap.has(s.strCd)) {
           storeMap.set(s.strCd, {
             strCd: s.strCd,
             strNm: s.strNm,
             strAddr: s.strAddr,
             strTno: s.strTno,
-            opngTime: s.opngTime,
-            clsngTime: s.clsngTime,
-            strLttd: s.strLttd,
-            strLitd: s.strLitd,
+            opngTime: s.opngTime ?? "",
+            clsngTime: s.clsngTime ?? "",
+            strLttd: lat,
+            strLitd: lng,
             inventories: {},
           });
         }
-        storeMap.get(s.strCd)!.inventories[pdNo] = s.qty;
+        storeMap.get(s.strCd)!.inventories[pdNo] = Number(s.qty) || 0;
       }
     })
   );
 
-  return Response.json({ stores: Array.from(storeMap.values()) });
+  const stores = Array.from(storeMap.values());
+  return Response.json({ stores, count: stores.length });
 }
