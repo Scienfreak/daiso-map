@@ -18,7 +18,7 @@ export default function RootLayout({
       <body className="h-full">
         <Script
           src={`https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoKey}&autoload=false`}
-          strategy="beforeInteractive"
+          strategy="afterInteractive"
         />
         {children}
       </body>

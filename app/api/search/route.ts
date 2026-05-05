@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
   const url = new URL(DAISO_SEARCH_URL);
   url.searchParams.set("searchTerm", q.trim());
-  url.searchParams.set("cntPerPage", "3");
+  url.searchParams.set("cntPerPage", "10");
   url.searchParams.set("pageNum", "1");
 
   const res = await fetch(url.toString(), {
@@ -37,12 +37,17 @@ export async function GET(request: NextRequest) {
   const documents: Record<string, unknown>[] =
     data?.resultSet?.result?.[0]?.resultDocuments ?? [];
 
-  const items = documents.slice(0, 3).map((d) => ({
-    pdNo: String(d["PD_NO"] ?? ""),
-    pdNm: String(d["PDNM"] ?? ""),
-    pdPrc: Number(d["PD_PRC"] ?? 0),
-    imageUrl: String(d["ATCH_FILE_URL"] ?? ""),
-  }));
+  const CDN = "https://cdn.daisomall.co.kr";
+  const items = documents.slice(0, 10).map((d) => {
+    const rawUrl = String(d["ATCH_FILE_URL"] ?? "");
+    const imageUrl = rawUrl ? (rawUrl.startsWith("http") ? rawUrl : `${CDN}${rawUrl}`) : "";
+    return {
+      pdNo: String(d["PD_NO"] ?? ""),
+      pdNm: String(d["PDNM"] ?? ""),
+      pdPrc: Number(d["PD_PRC"] ?? 0),
+      imageUrl,
+    };
+  });
 
   return Response.json({ items });
 }

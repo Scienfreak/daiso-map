@@ -33,7 +33,7 @@ export default function Home() {
   }
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full" style={{ height: '100dvh' }}>
       {/* Map fills the full viewport */}
       <KakaoMap
         stores={stores}

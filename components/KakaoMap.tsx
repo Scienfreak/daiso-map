@@ -243,8 +243,8 @@ export default function KakaoMap({ stores, selectedProducts, loading }: Props) {
   }, [popup, selectedProducts, mapReady]);
 
   return (
-    <div className="relative w-full h-full">
-      <div ref={containerRef} className="w-full h-full" />
+    <div className="relative w-full h-full" style={{ minHeight: 0 }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       {loading && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-full shadow-lg px-4 py-2 flex items-center gap-2 z-10">
           <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />

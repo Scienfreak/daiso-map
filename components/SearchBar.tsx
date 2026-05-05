@@ -80,23 +80,34 @@ export default function SearchBar({ onProductSelect, selectedPdNos }: Props) {
       </div>
 
       {open && results.length > 0 && (
-        <ul className="absolute top-full mt-1 left-0 right-0 bg-white rounded-xl shadow-xl overflow-hidden z-50">
+        <ul className="absolute top-full mt-1 left-0 right-0 bg-white rounded-xl shadow-xl z-50 overflow-y-auto" style={{ maxHeight: '340px' }}>
           {results.map((product) => {
             const alreadyAdded = selectedPdNos.has(product.pdNo);
             return (
-              <li key={product.pdNo}>
+              <li key={product.pdNo} className="border-b border-gray-100 last:border-0">
                 <button
                   onClick={() => !alreadyAdded && handleSelect(product)}
-                  className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors ${
+                  className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors ${
                     alreadyAdded
                       ? "opacity-50 cursor-not-allowed bg-gray-50"
-                      : "hover:bg-gray-50 cursor-pointer"
+                      : "hover:bg-gray-50 active:bg-gray-100 cursor-pointer"
                   }`}
                   disabled={alreadyAdded}
                 >
+                  {product.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={product.imageUrl}
+                      alt={product.pdNm}
+                      className="w-12 h-12 rounded-lg object-cover shrink-0 bg-gray-100"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-lg bg-gray-100 shrink-0" />
+                  )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{product.pdNm}</p>
-                    <p className="text-xs text-gray-500">{product.pdPrc.toLocaleString()}원</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{product.pdPrc.toLocaleString()}원</p>
                   </div>
                   {alreadyAdded && (
                     <span className="text-xs text-green-600 font-medium shrink-0">추가됨</span>
