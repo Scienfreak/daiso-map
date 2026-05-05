@@ -48,30 +48,47 @@ export default function KakaoMap({ stores, selectedProducts, loading }: Props) {
   const popupOverlayRef = useRef<KakaoOverlay | null>(null);
   const [popup, setPopup] = useState<PopupInfo | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapStatus, setMapStatus] = useState("SDK 로딩 중...");
 
-  // Initialize map once
+  // Initialize map once — load SDK dynamically for reliable Android support
   useEffect(() => {
+    const apiKey = process.env.NEXT_PUBLIC_KAKAO_MAP_API_KEY;
+
     function init() {
       if (!containerRef.current) return;
-      const map = new window.kakao.maps.Map(containerRef.current, {
-        center: new window.kakao.maps.LatLng(37.5665, 126.978),
-        level: 8,
-      });
-      mapRef.current = map;
-      setMapReady(true);
+      setMapStatus("지도 초기화 중...");
+      try {
+        const map = new window.kakao.maps.Map(containerRef.current, {
+          center: new window.kakao.maps.LatLng(37.5665, 126.978),
+          level: 8,
+        });
+        mapRef.current = map;
+        setMapReady(true);
+        setMapStatus("");
+      } catch (e) {
+        setMapError(`지도 초기화 오류: ${e}`);
+      }
+    }
+
+    function attachScript() {
+      setMapStatus("Kakao SDK 로딩 중...");
+      const script = document.createElement("script");
+      script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${apiKey}&autoload=false`;
+      script.onload = () => {
+        setMapStatus("SDK 로드 완료, 지도 초기화 중...");
+        window.kakao.maps.load(init);
+      };
+      script.onerror = () => {
+        setMapError(`Kakao SDK 로딩 실패 (API 키: ${apiKey ? apiKey.slice(0, 8) + "..." : "없음"})`);
+      };
+      document.head.appendChild(script);
     }
 
     if (window.kakao?.maps) {
       window.kakao.maps.load(init);
     } else {
-      // Wait for kakao script to load
-      const interval = setInterval(() => {
-        if (window.kakao?.maps) {
-          clearInterval(interval);
-          window.kakao.maps.load(init);
-        }
-      }, 100);
-      return () => clearInterval(interval);
+      attachScript();
     }
   }, []);
 
@@ -245,6 +262,23 @@ export default function KakaoMap({ stores, selectedProducts, loading }: Props) {
   return (
     <div className="relative w-full h-full" style={{ minHeight: 0 }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Error display */}
+      {mapError && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#fef2f2', padding: '24px' }}>
+          <p style={{ color: '#dc2626', fontSize: '14px', textAlign: 'center', fontWeight: 600, marginBottom: '8px' }}>지도 로딩 실패</p>
+          <p style={{ color: '#7f1d1d', fontSize: '12px', textAlign: 'center' }}>{mapError}</p>
+        </div>
+      )}
+
+      {/* Loading state (before map is ready and no error) */}
+      {!mapReady && !mapError && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}>
+          <div style={{ width: '32px', height: '32px', border: '3px solid #d1d5db', borderTopColor: '#3b82f6', borderRadius: '50%', marginBottom: '12px', animation: 'spin 0.8s linear infinite' }} />
+          <p style={{ color: '#6b7280', fontSize: '13px' }}>{mapStatus}</p>
+        </div>
+      )}
+
       {loading && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-full shadow-lg px-4 py-2 flex items-center gap-2 z-10">
           <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
