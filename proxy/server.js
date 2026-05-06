@@ -109,18 +109,18 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       const ls = {};
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        ls[k] = (localStorage.getItem(k) || "").slice(0, 80);
+        ls[k] = (localStorage.getItem(k) || "").slice(0, 200);
       }
       const ss = {};
       for (let i = 0; i < sessionStorage.length; i++) {
         const k = sessionStorage.key(i);
-        ss[k] = (sessionStorage.getItem(k) || "").slice(0, 80);
+        ss[k] = (sessionStorage.getItem(k) || "").slice(0, 200);
       }
       return {
         hasAxios: typeof window.axios !== "undefined",
         cookie: document.cookie.slice(0, 300),
-        lsKeys: Object.keys(ls),
-        ssKeys: Object.keys(ss),
+        ls,
+        ss,
       };
     });
     console.log("[proxy] authState:", JSON.stringify(authState));
@@ -209,11 +209,17 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       return allStores;
     }
 
-    // Fallback: page.evaluate — try axios first (page may have interceptors with auth)
+    // Fallback: page.evaluate — try axios first, then fetch with all available auth
     console.log("[proxy] No intercepted response, falling back to page.evaluate");
 
     const result = await page.evaluate(
       async ({ url, body }) => {
+        // Collect auth tokens from localStorage
+        const apiV2 = localStorage.getItem("api_v2") || "";
+        const extraHeaders = {};
+        if (apiV2) extraHeaders["Authorization"] = `Bearer ${apiV2}`;
+        console.log("[page] api_v2:", apiV2.slice(0, 80));
+
         try {
           // Try axios first — if the page uses axios interceptors for auth tokens, this works
           if (typeof window.axios !== "undefined") {
@@ -226,7 +232,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
         try {
           const res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...extraHeaders },
             credentials: "include",
             body: JSON.stringify(body),
           });
