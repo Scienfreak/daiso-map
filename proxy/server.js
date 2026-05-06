@@ -39,7 +39,8 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await page.waitForTimeout(3000);
+    // Wait for the page's JS to fully initialize auth state
+    await page.waitForTimeout(6000);
 
     // Call the inventory API from WITHIN the browser (uses browser's auth context)
     const firstResult = await page.evaluate(
@@ -70,6 +71,40 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
         },
       }
     );
+
+    // Retry once if 403 — page JS may need more time to set up auth
+    if (!firstResult.ok && firstResult.status === 403) {
+      console.log("[proxy] Got 403, waiting 5s and retrying...");
+      await page.waitForTimeout(5000);
+      firstResult = await page.evaluate(
+        async ({ url, body }) => {
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            return { ok: res.ok, status: res.status, data };
+          } catch (e) {
+            return { ok: false, error: String(e) };
+          }
+        },
+        {
+          url: INVENTORY_URL,
+          body: {
+            pdNo,
+            curLttd: lat,
+            curLitd: lng,
+            geolocationAgrYn: "Y",
+            pkupYn: "",
+            intCd: "",
+            pageSize: 30,
+            currentPage: 1,
+          },
+        }
+      );
+    }
 
     if (!firstResult.ok) {
       throw new Error(
