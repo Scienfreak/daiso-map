@@ -192,8 +192,7 @@ app.get("/inventory", async (req, res) => {
   }
 });
 
-// Debug endpoint: visit the Daiso product page and return the inner HTML of the page
-// to understand DOM structure for scraping
+// Debug endpoint: capture all API calls the Daiso page makes + extract district options
 app.get("/inspect", async (req, res) => {
   const pdNo = req.query.pdNo || "1045002";
   const browser = await chromium.launch({
@@ -206,17 +205,73 @@ app.get("/inspect", async (req, res) => {
       locale: "ko-KR",
     });
     const page = await context.newPage();
+
+    // Capture all API calls
+    const apiCalls = [];
+    page.on("request", (req) => {
+      if (req.url().includes("daisomall.co.kr") && !req.url().includes(".js") && !req.url().includes(".css")) {
+        apiCalls.push({ method: req.method(), url: req.url() });
+      }
+    });
+    const apiResponses = [];
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("daisomall.co.kr") && !url.includes(".js") && !url.includes(".css") && !url.includes(".png") && !url.includes(".jpg")) {
+        try {
+          const body = await response.text();
+          if (body.length < 5000) apiResponses.push({ url: url.replace("https://", ""), status: response.status(), body });
+        } catch {}
+      }
+    });
+
     await page.goto(`https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await page.waitForTimeout(5000);
-    const html = await page.content();
-    res.type("text/html").send(html);
+    await page.waitForTimeout(3000);
+
+    // Click on tab2 (store search tab)
+    try {
+      await page.click('[id="tab-tab2"], #tab-tab2, [aria-controls="tab2"]', { timeout: 3000 });
+      await page.waitForTimeout(3000);
+    } catch { console.log("[inspect] tab2 click failed"); }
+
+    // Try to find and click the 시도 select (서울특별시)
+    let selectOptions = [];
+    try {
+      // Find all select elements and their options
+      selectOptions = await page.evaluate(() => {
+        const selects = document.querySelectorAll("select");
+        return Array.from(selects).map(sel => ({
+          name: sel.name || sel.id || sel.className,
+          options: Array.from(sel.options).map(o => ({ value: o.value, text: o.text }))
+        }));
+      });
+    } catch {}
+
+    // Also look for Vue select/dropdown components
+    let vueSelects = [];
+    try {
+      vueSelects = await page.evaluate(() => {
+        // Look for elements with 구 names in text content
+        const allText = document.body.innerText;
+        const guPattern = /[가-힣]+구/g;
+        const matches = allText.match(guPattern) || [];
+        return [...new Set(matches)];
+      });
+    } catch {}
+
+    res.json({
+      apiCalls: apiCalls.slice(0, 30),
+      apiResponses,
+      selectOptions,
+      vueSelects,
+    });
   } finally {
     await browser.close();
   }
 });
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
