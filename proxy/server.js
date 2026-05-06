@@ -67,8 +67,42 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       console.log("[proxy] No init response detected, continuing");
     }
 
+    // Log all requests the page makes to understand auth mechanism
+    const pageRequests = [];
+    page.on("request", (req) => {
+      if (req.url().includes("daisomall.co.kr")) {
+        pageRequests.push(req.url().split("?")[0].replace("https://", ""));
+      }
+      if (req.url().includes("mapi.daisomall.co.kr")) {
+        console.log("[proxy] PAGE->MAPI:", req.url().split("?")[0]);
+        console.log("[proxy] mapi req header keys:", JSON.stringify(Object.keys(req.headers())));
+      }
+    });
+
     // Give the page time to fire follow-up calls (mapi may auto-trigger with geolocation)
     await page.waitForTimeout(5000);
+
+    // Dump auth state to understand what tokens the page uses
+    const authState = await page.evaluate(() => {
+      const ls = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        ls[k] = (localStorage.getItem(k) || "").slice(0, 80);
+      }
+      const ss = {};
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const k = sessionStorage.key(i);
+        ss[k] = (sessionStorage.getItem(k) || "").slice(0, 80);
+      }
+      return {
+        hasAxios: typeof window.axios !== "undefined",
+        cookie: document.cookie.slice(0, 300),
+        lsKeys: Object.keys(ls),
+        ssKeys: Object.keys(ss),
+      };
+    });
+    console.log("[proxy] authState:", JSON.stringify(authState));
+    console.log("[proxy] pageRequests:", pageRequests.slice(0, 10).join(" | "));
 
     if (!capturedData) {
       const inputSelectors = [
@@ -153,12 +187,20 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       return allStores;
     }
 
-    // Fallback: page.evaluate fetch with extended wait
+    // Fallback: page.evaluate — try axios first (page may have interceptors with auth)
     console.log("[proxy] No intercepted response, falling back to page.evaluate");
-    await page.waitForTimeout(5000);
 
     const result = await page.evaluate(
       async ({ url, body }) => {
+        try {
+          // Try axios first — if the page uses axios interceptors for auth tokens, this works
+          if (typeof window.axios !== "undefined") {
+            const res = await window.axios.post(url, body);
+            return { ok: true, status: 200, data: res.data };
+          }
+        } catch (e) {
+          console.log("axios failed:", String(e));
+        }
         try {
           const res = await fetch(url, {
             method: "POST",
