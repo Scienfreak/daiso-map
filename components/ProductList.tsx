@@ -6,9 +6,11 @@ type Props = {
   products: SelectedProduct[];
   onQuantityChange: (pdNo: string, qty: number) => void;
   onRemove: (pdNo: string) => void;
+  onSearch: () => void;
+  loading: boolean;
 };
 
-export default function ProductList({ products, onQuantityChange, onRemove }: Props) {
+export default function ProductList({ products, onQuantityChange, onRemove, onSearch, loading }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (products.length === 0) return null;
@@ -77,21 +79,41 @@ export default function ProductList({ products, onQuantityChange, onRemove }: Pr
         </ul>
       )}
 
-      {/* Legend */}
+      {/* Footer: legend + search button */}
       {!collapsed && (
-        <div className="flex items-center gap-4 px-4 py-2 bg-gray-50 border-t border-gray-100">
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
-            <span className="text-xs text-gray-600">전부 재고</span>
+        <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
+              <span className="text-xs text-gray-600">전부 재고</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-yellow-400 inline-block" />
+              <span className="text-xs text-gray-600">일부 재고</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-gray-400 inline-block" />
+              <span className="text-xs text-gray-600">재고 없음</span>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full bg-yellow-400 inline-block" />
-            <span className="text-xs text-gray-600">일부 재고</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full bg-gray-400 inline-block" />
-            <span className="text-xs text-gray-600">재고 없음</span>
-          </div>
+
+          <button
+            onClick={onSearch}
+            disabled={loading}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+          >
+            {loading ? (
+              <>
+                <span
+                  className="w-3 h-3 border-2 border-white border-t-transparent rounded-full inline-block"
+                  style={{ animation: "spin 0.7s linear infinite" }}
+                />
+                조회 중
+              </>
+            ) : (
+              "지도에 표시"
+            )}
+          </button>
         </div>
       )}
     </div>

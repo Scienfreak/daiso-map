@@ -11,7 +11,7 @@ const KakaoMap = dynamic(() => import("@/components/KakaoMap"), { ssr: false });
 
 export default function Home() {
   const [selectedProducts, setSelectedProducts] = useState<SelectedProduct[]>([]);
-  const { stores, loading } = useInventory(selectedProducts);
+  const { stores, loading, search } = useInventory(selectedProducts);
 
   const selectedPdNos = new Set(selectedProducts.map((p) => p.pdNo));
 
@@ -52,6 +52,8 @@ export default function Home() {
             products={selectedProducts}
             onQuantityChange={handleQuantityChange}
             onRemove={handleRemove}
+            onSearch={search}
+            loading={loading}
           />
         </div>
       </div>
