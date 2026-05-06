@@ -53,7 +53,9 @@ async function getSessionHeaders() {
       }
     });
 
-    await page.goto(DAISO_PAGE_URL, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(DAISO_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    // Give JS a moment to set cookies after DOM loads
+    await page.waitForTimeout(3000);
 
     // If no mapi request triggered automatically, extract cookies manually
     if (!capturedHeaders) {
