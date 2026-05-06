@@ -9,9 +9,31 @@ const DAISO_PAGE_URL =
 const INVENTORY_URL =
   "https://mapi.daisomall.co.kr/ms/msg/newIntSelStr";
 
-// Cache inventory results per product
 const cache = new Map();
 const CACHE_TTL = 10 * 60 * 1000;
+
+// Only one browser at a time (Render.com free tier: 512MB)
+let browserBusy = false;
+const browserWaiters = [];
+
+function acquireBrowser() {
+  if (!browserBusy) {
+    browserBusy = true;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => browserWaiters.push(resolve));
+}
+
+function releaseBrowser() {
+  if (browserWaiters.length > 0) {
+    browserWaiters.shift()();
+  } else {
+    browserBusy = false;
+  }
+}
+
+// Deduplicate in-flight fetches for the same pdNo
+const inFlight = new Map();
 
 async function fetchInventoryWithBrowser(pdNo, lat, lng) {
   console.log(`[proxy] Launching browser for pdNo=${pdNo}`);
@@ -271,6 +293,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
     return allStores;
   } finally {
     await browser.close();
+    releaseBrowser();
     console.log("[proxy] Browser closed");
   }
 }
@@ -306,10 +329,29 @@ app.get("/inventory", async (req, res) => {
     return res.json({ stores: cached.stores, count: cached.stores.length });
   }
 
-  try {
+  // Deduplicate: if already fetching this pdNo, wait for that result
+  if (inFlight.has(pdNo)) {
+    console.log(`[proxy] Joining in-flight request for pdNo=${pdNo}`);
+    try {
+      const stores = await inFlight.get(pdNo);
+      return res.json({ stores, count: stores.length });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  const fetchPromise = (async () => {
+    await acquireBrowser();
     const rawStores = await fetchInventoryWithBrowser(pdNo, lat, lng);
     const stores = normalizeStores(rawStores);
     cache.set(pdNo, { stores, expiresAt: Date.now() + CACHE_TTL });
+    return stores;
+  })().finally(() => inFlight.delete(pdNo));
+
+  inFlight.set(pdNo, fetchPromise);
+
+  try {
+    const stores = await fetchPromise;
     res.json({ stores, count: stores.length });
   } catch (err) {
     console.error("[proxy] Error:", err.message);
