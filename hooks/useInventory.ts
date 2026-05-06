@@ -2,17 +2,17 @@
 import { useState, useCallback, useEffect } from "react";
 import type { SelectedProduct, StoreInfo } from "@/lib/types";
 
-export function useInventory(selectedProducts: SelectedProduct[]) {
+export function useInventory(selectedProducts: SelectedProduct[], districtCode: string) {
   const [stores, setStores] = useState<StoreInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Clear map when product list changes so stale markers don't linger
+  // Clear map when product list or district changes
   useEffect(() => {
     setStores([]);
-  }, [JSON.stringify(selectedProducts.map((p) => p.pdNo))]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(selectedProducts.map((p) => p.pdNo)), districtCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const search = useCallback(async () => {
-    if (selectedProducts.length === 0) return;
+    if (selectedProducts.length === 0 || !districtCode) return;
 
     setLoading(true);
     setStores([]);
@@ -23,18 +23,17 @@ export function useInventory(selectedProducts: SelectedProduct[]) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           pdNos: selectedProducts.map((p) => p.pdNo),
+          districtCode,
         }),
       });
       const data = await r.json();
-      const allStores: StoreInfo[] = data.stores ?? [];
-      // Seoul only for now
-      setStores(allStores.filter((s) => s.strAddr.includes("서울")));
+      setStores(data.stores ?? []);
     } catch {
       setStores([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedProducts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedProducts, districtCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { stores, loading, search };
 }

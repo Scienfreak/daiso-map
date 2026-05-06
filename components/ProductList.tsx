@@ -8,9 +8,10 @@ type Props = {
   onRemove: (pdNo: string) => void;
   onSearch: () => void;
   loading: boolean;
+  searchDisabled: boolean;
 };
 
-export default function ProductList({ products, onQuantityChange, onRemove, onSearch, loading }: Props) {
+export default function ProductList({ products, onQuantityChange, onRemove, onSearch, loading, searchDisabled }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (products.length === 0) return null;
@@ -99,7 +100,7 @@ export default function ProductList({ products, onQuantityChange, onRemove, onSe
 
           <button
             onClick={onSearch}
-            disabled={loading}
+            disabled={loading || searchDisabled}
             className="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
           >
             {loading ? (

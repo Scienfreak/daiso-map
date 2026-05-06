@@ -35,7 +35,7 @@ function releaseBrowser() {
 // Deduplicate in-flight fetches for the same pdNo
 const inFlight = new Map();
 
-async function fetchInventoryWithBrowser(pdNo, lat, lng) {
+async function fetchInventoryWithBrowser(pdNo, lat, lng, intCd = "") {
   console.log(`[proxy] Launching browser for pdNo=${pdNo}`);
   const browser = await chromium.launch({
     headless: true,
@@ -92,7 +92,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
             curLitd: lng,
             geolocationAgrYn: "Y",
             pkupYn: "",
-            intCd: "",
+            intCd,
             pageSize: 30,
             currentPage,
           },
@@ -151,20 +151,22 @@ app.get("/inventory", async (req, res) => {
   const pdNo = req.query.pdNo;
   const lat = parseFloat(req.query.lat) || 37.5665;
   const lng = parseFloat(req.query.lng) || 126.978;
+  const intCd = req.query.intCd || "";
 
   if (!pdNo) return res.status(400).json({ error: "pdNo is required" });
 
-  const cached = cache.get(pdNo);
+  const cacheKey = `${pdNo}:${intCd}`;
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     console.log(`[proxy] Cache hit for pdNo=${pdNo}`);
     return res.json({ stores: cached.stores, count: cached.stores.length });
   }
 
-  // Deduplicate: if already fetching this pdNo, wait for that result
-  if (inFlight.has(pdNo)) {
-    console.log(`[proxy] Joining in-flight request for pdNo=${pdNo}`);
+  // Deduplicate: if already fetching this cacheKey, wait for that result
+  if (inFlight.has(cacheKey)) {
+    console.log(`[proxy] Joining in-flight request for ${cacheKey}`);
     try {
-      const stores = await inFlight.get(pdNo);
+      const stores = await inFlight.get(cacheKey);
       return res.json({ stores, count: stores.length });
     } catch (err) {
       return res.status(500).json({ error: err.message });
@@ -173,13 +175,13 @@ app.get("/inventory", async (req, res) => {
 
   const fetchPromise = (async () => {
     await acquireBrowser();
-    const rawStores = await fetchInventoryWithBrowser(pdNo, lat, lng);
+    const rawStores = await fetchInventoryWithBrowser(pdNo, lat, lng, intCd);
     const stores = normalizeStores(rawStores);
-    cache.set(pdNo, { stores, expiresAt: Date.now() + CACHE_TTL });
+    cache.set(cacheKey, { stores, expiresAt: Date.now() + CACHE_TTL });
     return stores;
-  })().finally(() => inFlight.delete(pdNo));
+  })().finally(() => inFlight.delete(cacheKey));
 
-  inFlight.set(pdNo, fetchPromise);
+  inFlight.set(cacheKey, fetchPromise);
 
   try {
     const stores = await fetchPromise;
