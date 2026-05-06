@@ -128,6 +128,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
               const res = await fetch(url, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: "include",
                 body: JSON.stringify(body),
               });
               return res.json();
@@ -162,6 +163,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            credentials: "include",
             body: JSON.stringify(body),
           });
           const data = await res.json();
@@ -201,6 +203,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
             const res = await fetch(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              credentials: "include",
               body: JSON.stringify(body),
             });
             return res.json();
