@@ -27,10 +27,13 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
   });
 
   try {
+    // Grant geolocation so the page can auto-trigger location-based mapi calls
     const context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
       locale: "ko-KR",
+      geolocation: { latitude: lat, longitude: lng },
+      permissions: ["geolocation"],
     });
     const page = await context.newPage();
 
@@ -53,56 +56,61 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       timeout: 60000,
     });
 
-    // Wait for the SPA to mount and render the search form
+    // Wait for page to make any successful API call (indicates auth/init complete)
     try {
-      await page.waitForSelector("input", { timeout: 20000, state: "visible" });
+      await page.waitForResponse(
+        (r) => r.url().includes("daisomall.co.kr") && r.status() === 200,
+        { timeout: 25000 }
+      );
+      console.log("[proxy] Page initialized");
     } catch {
-      console.log("[proxy] No input found, waiting 10s");
-      await page.waitForTimeout(10000);
-    }
-    await page.waitForTimeout(2000);
-
-    // Try to fill the search box and submit to trigger the page's own API call
-    const inputSelectors = [
-      'input[type="text"]',
-      'input[type="search"]',
-      'input[placeholder*="상품"]',
-      'input[placeholder*="검색"]',
-      'input[placeholder*="product"]',
-      "input:visible",
-      "input",
-    ];
-
-    let triggered = false;
-    for (const selector of inputSelectors) {
-      try {
-        const el = await page.$(selector);
-        if (!el) continue;
-        const visible = await el.isVisible();
-        if (!visible) continue;
-
-        await el.click();
-        await el.fill(pdNo);
-        await el.press("Enter");
-        console.log(`[proxy] Submitted search via selector: ${selector}`);
-        triggered = true;
-        break;
-      } catch {}
+      console.log("[proxy] No init response detected, continuing");
     }
 
-    if (!triggered) {
-      // Try clicking any search button
-      try {
-        await page.click('button[type="submit"], button:has-text("검색")', {
-          timeout: 3000,
-        });
-      } catch {}
-    }
+    // Give the page time to fire follow-up calls (mapi may auto-trigger with geolocation)
+    await page.waitForTimeout(5000);
 
-    // Wait for intercepted response (up to 15 seconds after submit)
-    for (let i = 0; i < 15; i++) {
-      await page.waitForTimeout(1000);
-      if (capturedData) break;
+    if (!capturedData) {
+      const inputSelectors = [
+        'input[type="text"]',
+        'input[type="search"]',
+        'input[placeholder*="상품"]',
+        'input[placeholder*="검색"]',
+        'input[placeholder*="product"]',
+        "input:visible",
+        "input",
+      ];
+
+      let triggered = false;
+      for (const selector of inputSelectors) {
+        try {
+          const el = await page.$(selector);
+          if (!el) continue;
+          const visible = await el.isVisible();
+          if (!visible) continue;
+
+          await el.click();
+          await el.fill(pdNo);
+          await el.press("Enter");
+          console.log(`[proxy] Submitted search via selector: ${selector}`);
+          triggered = true;
+          break;
+        } catch {}
+      }
+
+      if (!triggered) {
+        try {
+          await page.click('button[type="submit"], button:has-text("검색")', {
+            timeout: 3000,
+          });
+        } catch {}
+      }
+
+      // Wait for intercepted response (up to 20 seconds after submit)
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(1000);
+        if (capturedData) break;
+      }
     }
 
     if (capturedData) {
