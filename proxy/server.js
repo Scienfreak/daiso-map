@@ -209,17 +209,72 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
       return allStores;
     }
 
-    // Fallback: page.evaluate — try axios first, then fetch with all available auth
-    console.log("[proxy] No intercepted response, falling back to page.evaluate");
+    // Extract mapi-domain cookies from the Playwright context (not visible via document.cookie)
+    const mapiCookies = await context.cookies("https://mapi.daisomall.co.kr");
+    const prdmCookies = await context.cookies("https://prdm.daisomall.co.kr");
+    const allCookieStr = [...mapiCookies, ...prdmCookies]
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+    console.log("[proxy] mapi cookies:", mapiCookies.map((c) => c.name).join(", ") || "(none)");
+    console.log("[proxy] prdm cookies:", prdmCookies.map((c) => c.name).join(", ") || "(none)");
+
+    // Try server-side fetch using mapi cookies extracted from Playwright context
+    try {
+      const sfRes = await fetch(INVENTORY_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Cookie": allCookieStr,
+          "Origin": "https://prdm.daisomall.co.kr",
+          "Referer": DAISO_PAGE_URL,
+          "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        },
+        body: JSON.stringify({
+          pdNo,
+          curLttd: lat,
+          curLitd: lng,
+          geolocationAgrYn: "Y",
+          pkupYn: "",
+          intCd: "",
+          pageSize: 30,
+          currentPage: 1,
+        }),
+      });
+      console.log(`[proxy] server-side fetch status: ${sfRes.status}`);
+      if (sfRes.ok) {
+        const sfData = await sfRes.json();
+        const stores = sfData?.data?.msStrVOList ?? [];
+        const total = sfData?.data?.intStrCont ?? stores.length;
+        const allStores = [...stores];
+        if (total > 30) {
+          const totalPages = Math.ceil(total / 30);
+          for (let p = 2; p <= totalPages; p++) {
+            const r = await fetch(INVENTORY_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Cookie": allCookieStr,
+                "Origin": "https://prdm.daisomall.co.kr",
+                "Referer": DAISO_PAGE_URL,
+                "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+              },
+              body: JSON.stringify({ pdNo, curLttd: lat, curLitd: lng, geolocationAgrYn: "Y", pkupYn: "", intCd: "", pageSize: 30, currentPage: p }),
+            });
+            const rd = await r.json();
+            allStores.push(...(rd?.data?.msStrVOList ?? []));
+          }
+        }
+        return allStores;
+      }
+    } catch (e) {
+      console.log("[proxy] server-side fetch error:", String(e));
+    }
+
+    // Last resort: page.evaluate — try axios first, then fetch with all available auth
+    console.log("[proxy] falling back to page.evaluate");
 
     const result = await page.evaluate(
       async ({ url, body }) => {
-        // Collect auth tokens from localStorage
-        const apiV2 = localStorage.getItem("api_v2") || "";
-        const extraHeaders = {};
-        if (apiV2) extraHeaders["Authorization"] = `Bearer ${apiV2}`;
-        console.log("[page] api_v2:", apiV2.slice(0, 80));
-
         try {
           // Try axios first — if the page uses axios interceptors for auth tokens, this works
           if (typeof window.axios !== "undefined") {
@@ -232,7 +287,7 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
         try {
           const res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...extraHeaders },
+            headers: { "Content-Type": "application/json" },
             credentials: "include",
             body: JSON.stringify(body),
           });
