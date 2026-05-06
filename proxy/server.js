@@ -190,6 +190,32 @@ app.get("/inventory", async (req, res) => {
   }
 });
 
+// Debug endpoint: visit the Daiso product page and return the inner HTML of the page
+// to understand DOM structure for scraping
+app.get("/inspect", async (req, res) => {
+  const pdNo = req.query.pdNo || "1045002";
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+  });
+  try {
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      locale: "ko-KR",
+    });
+    const page = await context.newPage();
+    await page.goto(`https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+    await page.waitForTimeout(5000);
+    const html = await page.content();
+    res.type("text/html").send(html);
+  } finally {
+    await browser.close();
+  }
+});
+
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => console.log(`[proxy] Listening on port ${PORT}`));
