@@ -272,6 +272,49 @@ app.get("/inspect", async (req, res) => {
   }
 });
 
+// Test: does page.evaluate fetch to mapi work at all?
+app.get("/test-mapi", async (req, res) => {
+  const pdNo = req.query.pdNo || "1045002";
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+  });
+  try {
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      locale: "ko-KR",
+    });
+    const page = await context.newPage();
+    await page.goto(DAISO_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(5000);
+
+    const result = await page.evaluate(
+      async ({ url, body }) => {
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          return { ok: res.ok, status: res.status, storeCount: data?.data?.msStrVOList?.length ?? 0, total: data?.data?.intStrCont ?? 0, firstStore: data?.data?.msStrVOList?.[0] ?? null, raw: data?.success === false ? data : undefined };
+        } catch (e) {
+          return { ok: false, error: String(e) };
+        }
+      },
+      {
+        url: INVENTORY_URL,
+        body: { keyword: "", pdNo, curLttd: 37.5665, curLitd: 126.978, geolocationAgrYn: "Y", pkupYn: "", intCd: "", pageSize: 30, currentPage: 1 },
+      }
+    );
+
+    res.json(result);
+  } finally {
+    await browser.close();
+  }
+});
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
