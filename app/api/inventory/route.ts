@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
   const pdNos: string[] = body.pdNos ?? [];
   const lat: number = body.lat ?? 37.5665;
   const lng: number = body.lng ?? 126.978;
+  const districtCode: string = body.districtCode ?? "";
 
   const proxyBase = process.env.INVENTORY_PROXY_URL;
 
@@ -32,12 +33,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Fetch inventory for each product from the proxy, in parallel
   const storeMap = new Map<string, StoreInfo>();
 
   await Promise.all(
     pdNos.map(async (pdNo) => {
-      const url = `${proxyBase}/inventory?pdNo=${encodeURIComponent(pdNo)}&lat=${lat}&lng=${lng}`;
+      const url = `${proxyBase}/inventory?pdNo=${encodeURIComponent(pdNo)}&lat=${lat}&lng=${lng}&intCd=${encodeURIComponent(districtCode)}`;
       const res = await fetch(url);
       if (!res.ok) return;
 

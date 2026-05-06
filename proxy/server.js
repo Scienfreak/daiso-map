@@ -35,7 +35,7 @@ function releaseBrowser() {
 // Deduplicate in-flight fetches for the same pdNo
 const inFlight = new Map();
 
-async function fetchInventoryWithBrowser(pdNo, lat, lng) {
+async function fetchInventoryWithBrowser(pdNo, lat, lng, intCd = "") {
   console.log(`[proxy] Launching browser for pdNo=${pdNo}`);
   const browser = await chromium.launch({
     headless: true,
@@ -49,305 +49,75 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng) {
   });
 
   try {
-    // Grant geolocation so the page can auto-trigger location-based mapi calls
     const context = await browser.newContext({
       userAgent:
-        "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       locale: "ko-KR",
-      geolocation: { latitude: lat, longitude: lng },
-      permissions: ["geolocation"],
     });
     const page = await context.newPage();
 
-    // Capture any successful mapi response the page makes
-    let capturedData = null;
-    page.on("response", async (response) => {
-      if (
-        response.url().includes("mapi.daisomall.co.kr/ms/msg/newIntSelStr") &&
-        response.status() === 200
-      ) {
-        try {
-          capturedData = await response.json();
-          console.log("[proxy] Intercepted mapi response from page");
-        } catch {}
-      }
-    });
-
+    // Visit Daiso page to establish Cloudflare session + cookies
     await page.goto(DAISO_PAGE_URL, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
 
-    // Wait for page to make any successful API call (indicates auth/init complete)
-    try {
-      await page.waitForResponse(
-        (r) => r.url().includes("daisomall.co.kr") && r.status() === 200,
-        { timeout: 25000 }
-      );
-      console.log("[proxy] Page initialized");
-    } catch {
-      console.log("[proxy] No init response detected, continuing");
-    }
-
-    // Log all requests the page makes to understand auth mechanism
-    const pageRequests = [];
-    page.on("request", (req) => {
-      if (req.url().includes("daisomall.co.kr")) {
-        pageRequests.push(req.url().split("?")[0].replace("https://", ""));
-      }
-      if (req.url().includes("mapi.daisomall.co.kr")) {
-        console.log("[proxy] PAGE->MAPI:", req.url().split("?")[0]);
-        console.log("[proxy] mapi req header keys:", JSON.stringify(Object.keys(req.headers())));
-      }
-    });
-
-    // Give the page time to fire follow-up calls (mapi may auto-trigger with geolocation)
+    // Wait for Cloudflare challenge to complete and cookies to be set
     await page.waitForTimeout(5000);
+    console.log("[proxy] Page loaded, cookies established");
 
-    // Dump auth state to understand what tokens the page uses
-    const authState = await page.evaluate(() => {
-      const ls = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        ls[k] = (localStorage.getItem(k) || "").slice(0, 200);
-      }
-      const ss = {};
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const k = sessionStorage.key(i);
-        ss[k] = (sessionStorage.getItem(k) || "").slice(0, 200);
-      }
-      return {
-        hasAxios: typeof window.axios !== "undefined",
-        cookie: document.cookie.slice(0, 300),
-        ls,
-        ss,
-      };
-    });
-    console.log("[proxy] authState:", JSON.stringify(authState));
-    console.log("[proxy] pageRequests:", pageRequests.slice(0, 10).join(" | "));
-
-    if (!capturedData) {
-      const inputSelectors = [
-        'input[type="text"]',
-        'input[type="search"]',
-        'input[placeholder*="상품"]',
-        'input[placeholder*="검색"]',
-        'input[placeholder*="product"]',
-        "input:visible",
-        "input",
-      ];
-
-      let triggered = false;
-      for (const selector of inputSelectors) {
-        try {
-          const el = await page.$(selector);
-          if (!el) continue;
-          const visible = await el.isVisible();
-          if (!visible) continue;
-
-          await el.click();
-          await el.fill(pdNo);
-          await el.press("Enter");
-          console.log(`[proxy] Submitted search via selector: ${selector}`);
-          triggered = true;
-          break;
-        } catch {}
-      }
-
-      if (!triggered) {
-        try {
-          await page.click('button[type="submit"], button:has-text("검색")', {
-            timeout: 3000,
-          });
-        } catch {}
-      }
-
-      // Wait for intercepted response (up to 20 seconds after submit)
-      for (let i = 0; i < 20; i++) {
-        await page.waitForTimeout(1000);
-        if (capturedData) break;
-      }
-    }
-
-    if (capturedData) {
-      const stores = capturedData?.data?.msStrVOList ?? [];
-      const total = capturedData?.data?.intStrCont ?? stores.length;
-      console.log(`[proxy] Intercepted ${stores.length} stores, total=${total}`);
-
-      // Fetch additional pages using page.evaluate (auth is now established)
-      const allStores = [...stores];
-      if (total > 30) {
-        const totalPages = Math.ceil(total / 30);
-        for (let p = 2; p <= totalPages; p++) {
-          const result = await page.evaluate(
-            async ({ url, body }) => {
-              const res = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify(body),
-              });
-              return res.json();
-            },
-            {
-              url: INVENTORY_URL,
-              body: {
-                pdNo,
-                curLttd: lat,
-                curLitd: lng,
-                geolocationAgrYn: "Y",
-                pkupYn: "",
-                intCd: "",
-                pageSize: 30,
-                currentPage: p,
-              },
-            }
-          );
-          allStores.push(...(result?.data?.msStrVOList ?? []));
-        }
-      }
-      return allStores;
-    }
-
-    // Extract mapi-domain cookies from the Playwright context (not visible via document.cookie)
-    const mapiCookies = await context.cookies("https://mapi.daisomall.co.kr");
-    const prdmCookies = await context.cookies("https://prdm.daisomall.co.kr");
-    const allCookieStr = [...mapiCookies, ...prdmCookies]
-      .map((c) => `${c.name}=${c.value}`)
-      .join("; ");
-    console.log("[proxy] mapi cookies:", mapiCookies.map((c) => c.name).join(", ") || "(none)");
-    console.log("[proxy] prdm cookies:", prdmCookies.map((c) => c.name).join(", ") || "(none)");
-
-    // Try server-side fetch using mapi cookies extracted from Playwright context
-    try {
-      const sfRes = await fetch(INVENTORY_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Cookie": allCookieStr,
-          "Origin": "https://prdm.daisomall.co.kr",
-          "Referer": DAISO_PAGE_URL,
-          "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        },
-        body: JSON.stringify({
-          pdNo,
-          curLttd: lat,
-          curLitd: lng,
-          geolocationAgrYn: "Y",
-          pkupYn: "",
-          intCd: "",
-          pageSize: 30,
-          currentPage: 1,
-        }),
-      });
-      console.log(`[proxy] server-side fetch status: ${sfRes.status}`);
-      if (sfRes.ok) {
-        const sfData = await sfRes.json();
-        const stores = sfData?.data?.msStrVOList ?? [];
-        const total = sfData?.data?.intStrCont ?? stores.length;
-        const allStores = [...stores];
-        if (total > 30) {
-          const totalPages = Math.ceil(total / 30);
-          for (let p = 2; p <= totalPages; p++) {
-            const r = await fetch(INVENTORY_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Cookie": allCookieStr,
-                "Origin": "https://prdm.daisomall.co.kr",
-                "Referer": DAISO_PAGE_URL,
-                "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S908N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-              },
-              body: JSON.stringify({ pdNo, curLttd: lat, curLitd: lng, geolocationAgrYn: "Y", pkupYn: "", intCd: "", pageSize: 30, currentPage: p }),
-            });
-            const rd = await r.json();
-            allStores.push(...(rd?.data?.msStrVOList ?? []));
-          }
-        }
-        return allStores;
-      }
-    } catch (e) {
-      console.log("[proxy] server-side fetch error:", String(e));
-    }
-
-    // Last resort: page.evaluate — try axios first, then fetch with all available auth
-    console.log("[proxy] falling back to page.evaluate");
-
-    const result = await page.evaluate(
-      async ({ url, body }) => {
-        try {
-          // Try axios first — if the page uses axios interceptors for auth tokens, this works
-          if (typeof window.axios !== "undefined") {
-            const res = await window.axios.post(url, body);
-            return { ok: true, status: 200, data: res.data };
-          }
-        } catch (e) {
-          console.log("axios failed:", String(e));
-        }
-        try {
-          const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(body),
-          });
-          const data = await res.json();
-          return { ok: res.ok, status: res.status, data };
-        } catch (e) {
-          return { ok: false, error: String(e) };
-        }
-      },
-      {
-        url: INVENTORY_URL,
-        body: {
-          pdNo,
-          curLttd: lat,
-          curLitd: lng,
-          geolocationAgrYn: "Y",
-          pkupYn: "",
-          intCd: "",
-          pageSize: 30,
-          currentPage: 1,
-        },
-      }
-    );
-
-    if (!result.ok) {
-      throw new Error(`Daiso API returned ${result.status ?? result.error}`);
-    }
-
-    const stores = result.data?.data?.msStrVOList ?? [];
-    const total = result.data?.data?.intStrCont ?? stores.length;
-    const allStores = [...stores];
-
-    if (total > 30) {
-      const totalPages = Math.ceil(total / 30);
-      for (let p = 2; p <= totalPages; p++) {
-        const r = await page.evaluate(
-          async ({ url, body }) => {
+    // Use browser's fetch: Chrome TLS fingerprint + Cloudflare cookies included automatically
+    async function browserFetch(currentPage) {
+      return page.evaluate(
+        async ({ url, body }) => {
+          try {
             const res = await fetch(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               credentials: "include",
               body: JSON.stringify(body),
             });
-            return res.json();
-          },
-          {
-            url: INVENTORY_URL,
-            body: {
-              pdNo,
-              curLttd: lat,
-              curLitd: lng,
-              geolocationAgrYn: "Y",
-              pkupYn: "",
-              intCd: "",
-              pageSize: 30,
-              currentPage: p,
-            },
+            const data = await res.json();
+            return { ok: res.ok, status: res.status, data };
+          } catch (e) {
+            return { ok: false, error: String(e) };
           }
-        );
-        allStores.push(...(r?.data?.msStrVOList ?? []));
+        },
+        {
+          url,
+          body: {
+            keyword: "",
+            pdNo,
+            curLttd: lat,
+            curLitd: lng,
+            geolocationAgrYn: "Y",
+            pkupYn: "",
+            intCd,
+            pageSize: 30,
+            currentPage,
+          },
+        }
+      );
+    }
+
+    const first = await browserFetch(1);
+    console.log(`[proxy] page 1 status=${first.status}, ok=${first.ok}`);
+
+    if (!first.ok) {
+      throw new Error(`Daiso API returned ${first.status ?? first.error}`);
+    }
+
+    const stores = first.data?.data?.msStrVOList ?? [];
+    const total = first.data?.data?.intStrCont ?? stores.length;
+    console.log(`[proxy] total=${total}, page1 stores=${stores.length}`);
+
+    const allStores = [...stores];
+
+    if (total > 30) {
+      const totalPages = Math.ceil(total / 30);
+      for (let p = 2; p <= totalPages; p++) {
+        const r = await browserFetch(p);
+        allStores.push(...(r?.data?.data?.msStrVOList ?? []));
       }
     }
 
@@ -381,20 +151,22 @@ app.get("/inventory", async (req, res) => {
   const pdNo = req.query.pdNo;
   const lat = parseFloat(req.query.lat) || 37.5665;
   const lng = parseFloat(req.query.lng) || 126.978;
+  const intCd = req.query.intCd || "";
 
   if (!pdNo) return res.status(400).json({ error: "pdNo is required" });
 
-  const cached = cache.get(pdNo);
+  const cacheKey = `${pdNo}:${intCd}`;
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     console.log(`[proxy] Cache hit for pdNo=${pdNo}`);
     return res.json({ stores: cached.stores, count: cached.stores.length });
   }
 
-  // Deduplicate: if already fetching this pdNo, wait for that result
-  if (inFlight.has(pdNo)) {
-    console.log(`[proxy] Joining in-flight request for pdNo=${pdNo}`);
+  // Deduplicate: if already fetching this cacheKey, wait for that result
+  if (inFlight.has(cacheKey)) {
+    console.log(`[proxy] Joining in-flight request for ${cacheKey}`);
     try {
-      const stores = await inFlight.get(pdNo);
+      const stores = await inFlight.get(cacheKey);
       return res.json({ stores, count: stores.length });
     } catch (err) {
       return res.status(500).json({ error: err.message });
@@ -403,13 +175,13 @@ app.get("/inventory", async (req, res) => {
 
   const fetchPromise = (async () => {
     await acquireBrowser();
-    const rawStores = await fetchInventoryWithBrowser(pdNo, lat, lng);
+    const rawStores = await fetchInventoryWithBrowser(pdNo, lat, lng, intCd);
     const stores = normalizeStores(rawStores);
-    cache.set(pdNo, { stores, expiresAt: Date.now() + CACHE_TTL });
+    cache.set(cacheKey, { stores, expiresAt: Date.now() + CACHE_TTL });
     return stores;
-  })().finally(() => inFlight.delete(pdNo));
+  })().finally(() => inFlight.delete(cacheKey));
 
-  inFlight.set(pdNo, fetchPromise);
+  inFlight.set(cacheKey, fetchPromise);
 
   try {
     const stores = await fetchPromise;
@@ -417,6 +189,32 @@ app.get("/inventory", async (req, res) => {
   } catch (err) {
     console.error("[proxy] Error:", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug endpoint: visit the Daiso product page and return the inner HTML of the page
+// to understand DOM structure for scraping
+app.get("/inspect", async (req, res) => {
+  const pdNo = req.query.pdNo || "1045002";
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+  });
+  try {
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      locale: "ko-KR",
+    });
+    const page = await context.newPage();
+    await page.goto(`https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+    await page.waitForTimeout(5000);
+    const html = await page.content();
+    res.type("text/html").send(html);
+  } finally {
+    await browser.close();
   }
 });
 
