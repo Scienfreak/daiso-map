@@ -415,7 +415,7 @@ app.get("/analyze-auth", async (req, res) => {
     });
 
     await page.goto(
-      `https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`,
+      `https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?tab=tab2&selectedPd=${pdNo}`,
       { waitUntil: "domcontentloaded", timeout: 60000 }
     );
     await page.waitForTimeout(5000);
@@ -485,64 +485,75 @@ app.get("/analyze-auth", async (req, res) => {
     });
     console.log("[analyze-auth] actualBaseURL:", actualBaseURL);
 
-    // Click tab2 using force to bypass sticky header overlay
-    try {
-      await page.locator("#tab-tab2").scrollIntoViewIfNeeded();
-      await page.locator("#tab-tab2").click({ force: true, timeout: 3000 });
-      console.log("[analyze-auth] tab2 clicked (force)");
-    } catch {
-      await page.evaluate(() => {
-        const el = document.getElementById("tab-tab2");
-        el?.click();
-        el?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      });
-      console.log("[analyze-auth] tab2 clicked (evaluate fallback)");
-    }
-    await page.waitForTimeout(4000);
+    // Collect ALL browser cookies (including HttpOnly cf_clearance) via Playwright API
+    const allCookies = await context.cookies([
+      "https://prdm.daisomall.co.kr",
+      "https://mapi.daisomall.co.kr",
+    ]);
+    const cookieSummary = allCookies.map((c) => ({
+      name: c.name,
+      domain: c.domain,
+      httpOnly: c.httpOnly,
+      valueSnippet: c.value.slice(0, 40),
+    }));
+    console.log("[analyze-auth] cookies:", JSON.stringify(cookieSummary));
 
-    // Capture which buttons are now visible after tab2 opens
-    const postTabButtons = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("button"))
-        .map((b) => ({
-          text: b.textContent?.trim().slice(0, 30),
-          className: b.className.slice(0, 60),
-          visible: b.offsetParent !== null,
-        }))
-        .filter((b) => b.visible)
-        .slice(0, 15)
+    // Call mapi via the page's OWN Vue axios instance — it already has all correct
+    // configuration (interceptors, withCredentials, cookies), so this should succeed
+    // if auth works at all in this browser context.
+    const axiosResult = await page.evaluate(
+      async ({ pdNo, lat, lng }) => {
+        try {
+          const nuxt = window.__nuxt__ || window.$nuxt;
+          const vm = nuxt._vm || nuxt;
+          const axios = vm?.$axios;
+          if (!axios) return { error: "no $axios on vm" };
+
+          const res = await axios.post("/ms/msg/newIntSelStr", {
+            keyword: "",
+            pdNo,
+            curLttd: lat,
+            curLitd: lng,
+            geolocationAgrYn: "Y",
+            pkupYn: "",
+            intCd: "",
+            pageSize: 30,
+            currentPage: 1,
+          });
+          return {
+            status: res.status,
+            success: res.data?.success,
+            count: res.data?.data?.msStrVOList?.length ?? 0,
+            total: res.data?.data?.intStrCont ?? 0,
+            firstStore: res.data?.data?.msStrVOList?.[0] ?? null,
+          };
+        } catch (e) {
+          return {
+            error: e.message,
+            status: e.response?.status,
+            data: e.response?.data,
+          };
+        }
+      },
+      { pdNo, lat: 37.5665, lng: 126.978 }
     );
+    console.log("[analyze-auth] axiosResult:", JSON.stringify(axiosResult));
 
-    // Click search button in tab2 content
-    try {
-      await page.locator("button.btn-search").click({ force: true, timeout: 3000 });
-      console.log("[analyze-auth] btn-search clicked (force)");
-    } catch {
-      await page.evaluate(() => { document.querySelector("button.btn-search")?.click(); });
-      console.log("[analyze-auth] btn-search clicked (evaluate fallback)");
-    }
-    await page.waitForTimeout(6000);
-
-    // Dump page structure for diagnosis
+    // page.route interceptor may have captured the request by now
+    // Also dump page structure for reference
     const pageStructure = await page.evaluate(() => ({
-      buttons: Array.from(document.querySelectorAll("button")).map((b) => ({
-        text: b.textContent?.trim().slice(0, 30),
-        id: b.id,
-        className: b.className.slice(0, 60),
-      })).slice(0, 20),
+      activeTab: document.querySelector(".el-tabs__item.is-active")?.id,
+      visibleButtons: Array.from(document.querySelectorAll("button"))
+        .filter((b) => b.offsetParent !== null)
+        .map((b) => ({ text: b.textContent?.trim().slice(0, 30), className: b.className.slice(0, 50) }))
+        .slice(0, 10),
       selects: Array.from(document.querySelectorAll("select")).map((s) => ({
-        id: s.id,
-        name: s.name,
+        id: s.id, name: s.name,
         options: Array.from(s.options).map((o) => ({ value: o.value, text: o.text })).slice(0, 5),
       })),
-      tabElements: Array.from(document.querySelectorAll('[role="tab"], [id*="tab"], [class*="tab"]')).map((el) => ({
-        tag: el.tagName,
-        id: el.id,
-        text: el.textContent?.trim().slice(0, 30),
-        className: el.className.slice(0, 60),
-      })).slice(0, 10),
     }));
 
-    res.json({ actualBaseURL, vueInfo, capturedMapiRequest, postTabButtons, pageStructure });
+    res.json({ actualBaseURL, axiosResult, capturedMapiRequest, cookieSummary, vueInfo, pageStructure });
   } finally {
     await browser.close();
   }
