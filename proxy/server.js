@@ -463,18 +463,66 @@ app.get("/analyze-auth", async (req, res) => {
       }
     });
 
-    // Try clicking tab2 and search to trigger a mapi call (so page.route can capture it)
-    try {
-      await page.click('[id="tab-tab2"], #tab-tab2, [aria-controls="tab2"]', { timeout: 3000 });
-      await page.waitForTimeout(2000);
-    } catch { console.log("[analyze-auth] tab2 click failed"); }
+    // Run the axios interceptors in browser context to find what baseURL Li.f() actually returns
+    const actualBaseURL = await page.evaluate(() => {
+      try {
+        const nuxt = window.__nuxt__ || window.$nuxt;
+        const vm = nuxt._vm || nuxt;
+        const axios = vm?.$axios;
+        const handlers = axios?.interceptors?.request?.handlers ?? [];
+        const config = {
+          baseURL: axios?.defaults?.baseURL ?? "",
+          url: "/ms/msg/newIntSelStr",
+          method: "post",
+        };
+        for (const h of handlers.filter(Boolean)) {
+          try { h.fulfilled?.(config); } catch {}
+        }
+        return config.baseURL;
+      } catch (e) {
+        return "error: " + e.message;
+      }
+    });
+    console.log("[analyze-auth] actualBaseURL:", actualBaseURL);
 
+    // Click tab2 using force to bypass sticky header overlay
     try {
-      await page.click('button:has-text("검색"), button:has-text("찾기"), .btn-search', { timeout: 3000 });
-      await page.waitForTimeout(4000);
-    } catch { console.log("[analyze-auth] search button click failed"); }
+      await page.locator("#tab-tab2").scrollIntoViewIfNeeded();
+      await page.locator("#tab-tab2").click({ force: true, timeout: 3000 });
+      console.log("[analyze-auth] tab2 clicked (force)");
+    } catch {
+      await page.evaluate(() => {
+        const el = document.getElementById("tab-tab2");
+        el?.click();
+        el?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      console.log("[analyze-auth] tab2 clicked (evaluate fallback)");
+    }
+    await page.waitForTimeout(4000);
 
-    // Also dump all visible buttons and selects to diagnose click failures
+    // Capture which buttons are now visible after tab2 opens
+    const postTabButtons = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button"))
+        .map((b) => ({
+          text: b.textContent?.trim().slice(0, 30),
+          className: b.className.slice(0, 60),
+          visible: b.offsetParent !== null,
+        }))
+        .filter((b) => b.visible)
+        .slice(0, 15)
+    );
+
+    // Click search button in tab2 content
+    try {
+      await page.locator("button.btn-search").click({ force: true, timeout: 3000 });
+      console.log("[analyze-auth] btn-search clicked (force)");
+    } catch {
+      await page.evaluate(() => { document.querySelector("button.btn-search")?.click(); });
+      console.log("[analyze-auth] btn-search clicked (evaluate fallback)");
+    }
+    await page.waitForTimeout(6000);
+
+    // Dump page structure for diagnosis
     const pageStructure = await page.evaluate(() => ({
       buttons: Array.from(document.querySelectorAll("button")).map((b) => ({
         text: b.textContent?.trim().slice(0, 30),
@@ -494,7 +542,7 @@ app.get("/analyze-auth", async (req, res) => {
       })).slice(0, 10),
     }));
 
-    res.json({ vueInfo, capturedMapiRequest, pageStructure });
+    res.json({ actualBaseURL, vueInfo, capturedMapiRequest, postTabButtons, pageStructure });
   } finally {
     await browser.close();
   }
