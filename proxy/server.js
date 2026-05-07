@@ -388,6 +388,118 @@ app.get("/test-mapi", async (req, res) => {
 });
 
 
+// Inspect Daiso page Vue/Nuxt internals to find the mapi auth mechanism
+app.get("/analyze-auth", async (req, res) => {
+  const pdNo = req.query.pdNo || "1045002";
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+  });
+  try {
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      locale: "ko-KR",
+    });
+    const page = await context.newPage();
+
+    // Intercept the actual mapi request the page makes to capture its headers
+    let capturedMapiRequest = null;
+    await page.route("**/newIntSelStr", async (route) => {
+      const request = route.request();
+      capturedMapiRequest = {
+        headers: request.headers(),
+        postData: request.postData(),
+      };
+      console.log("[analyze-auth] Intercepted mapi request headers:", JSON.stringify(request.headers()));
+      await route.continue();
+    });
+
+    await page.goto(
+      `https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`,
+      { waitUntil: "domcontentloaded", timeout: 60000 }
+    );
+    await page.waitForTimeout(5000);
+
+    // Extract Vue/Nuxt app internals: axios config, interceptors, session state, storage
+    const vueInfo = await page.evaluate(() => {
+      try {
+        const nuxt = window.__nuxt__ || window.$nuxt;
+        if (!nuxt) return { error: "no __nuxt__ on window" };
+
+        const vm = nuxt._vm || nuxt;
+        const store = vm?.$store;
+        const axios = vm?.$axios;
+
+        const interceptors = (axios?.interceptors?.request?.handlers ?? [])
+          .filter(Boolean)
+          .map((h) => String(h.fulfilled).slice(0, 1000));
+
+        const authStorage = {};
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (/token|auth|key|session|secret/i.test(k)) authStorage[k] = localStorage.getItem(k);
+          }
+        } catch {}
+
+        const authCookies = document.cookie
+          .split(";")
+          .map((c) => c.trim())
+          .filter((c) => /token|auth|cf_|session/i.test(c));
+
+        return {
+          hasNuxt: true,
+          hasAxios: !!axios,
+          axiosBaseURL: axios?.defaults?.baseURL,
+          axiosCommonHeaders: axios?.defaults?.headers?.common,
+          requestInterceptors: interceptors,
+          sessionState: store?.state?.session,
+          nuxtStateKeys: Object.keys(window.__NUXT__?.state ?? {}),
+          authStorage,
+          authCookies,
+        };
+      } catch (e) {
+        return { error: String(e) };
+      }
+    });
+
+    // Try clicking tab2 and search to trigger a mapi call (so page.route can capture it)
+    try {
+      await page.click('[id="tab-tab2"], #tab-tab2, [aria-controls="tab2"]', { timeout: 3000 });
+      await page.waitForTimeout(2000);
+    } catch { console.log("[analyze-auth] tab2 click failed"); }
+
+    try {
+      await page.click('button:has-text("검색"), button:has-text("찾기"), .btn-search', { timeout: 3000 });
+      await page.waitForTimeout(4000);
+    } catch { console.log("[analyze-auth] search button click failed"); }
+
+    // Also dump all visible buttons and selects to diagnose click failures
+    const pageStructure = await page.evaluate(() => ({
+      buttons: Array.from(document.querySelectorAll("button")).map((b) => ({
+        text: b.textContent?.trim().slice(0, 30),
+        id: b.id,
+        className: b.className.slice(0, 60),
+      })).slice(0, 20),
+      selects: Array.from(document.querySelectorAll("select")).map((s) => ({
+        id: s.id,
+        name: s.name,
+        options: Array.from(s.options).map((o) => ({ value: o.value, text: o.text })).slice(0, 5),
+      })),
+      tabElements: Array.from(document.querySelectorAll('[role="tab"], [id*="tab"], [class*="tab"]')).map((el) => ({
+        tag: el.tagName,
+        id: el.id,
+        text: el.textContent?.trim().slice(0, 30),
+        className: el.className.slice(0, 60),
+      })).slice(0, 10),
+    }));
+
+    res.json({ vueInfo, capturedMapiRequest, pageStructure });
+  } finally {
+    await browser.close();
+  }
+});
+
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => console.log(`[proxy] Listening on port ${PORT}`));
