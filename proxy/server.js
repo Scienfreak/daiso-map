@@ -38,7 +38,7 @@ function releaseBrowser() {
 const inFlight = new Map();
 
 async function fetchInventoryWithBrowser(pdNo, lat, lng, intCd = "") {
-  console.log(`[proxy] Launching browser for pdNo=${pdNo}`);
+  console.log(`[proxy] Launching browser for pdNo=${pdNo} intCd=${intCd}`);
   const browser = await chromium.launch({
     headless: true,
     args: [
@@ -58,19 +58,80 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng, intCd = "") {
     });
     const page = await context.newPage();
 
-    // Visit Daiso page to establish Cloudflare session + cookies
-    await page.goto(DAISO_PAGE_URL, {
+    // Strategy 1: visit mapi domain first to acquire its own cf_clearance cookie.
+    // Previously only prdm was visited; mapi is a separate Cloudflare zone.
+    console.log("[proxy] Pre-visiting mapi domain for cf_clearance");
+    await page.goto("https://mapi.daisomall.co.kr/", {
       waitUntil: "domcontentloaded",
-      timeout: 60000,
+      timeout: 30000,
+    }).catch((e) => console.log("[proxy] mapi pre-visit:", e.message.split("\n")[0]));
+    await page.waitForTimeout(3000);
+
+    // Strategy 2: intercept the page's own mapi responses rather than making a
+    // separate fetch — the page's XHR already has the correct auth context.
+    const capturedStores = [];
+    page.on("response", async (response) => {
+      if (response.url().includes("newIntSelStr")) {
+        try {
+          const json = await response.json();
+          const stores = json?.data?.msStrVOList ?? [];
+          capturedStores.push(...stores);
+          console.log(`[proxy] Intercepted mapi: ${stores.length} stores (running total: ${capturedStores.length})`);
+        } catch {}
+      }
     });
 
-    // Wait for Cloudflare challenge to complete and cookies to be set
-    await page.waitForTimeout(5000);
-    console.log("[proxy] Page loaded, cookies established");
+    // Navigate to Daiso page with the product pre-selected to skip product search step
+    await page.goto(
+      `https://prdm.daisomall.co.kr/ms/msb/SCR_MSB_0011?selectedPd=${pdNo}`,
+      { waitUntil: "domcontentloaded", timeout: 60000 }
+    );
+    await page.waitForTimeout(4000);
+    console.log("[proxy] Daiso page loaded");
 
-    // Use browser's fetch: Chrome TLS fingerprint + Cloudflare cookies included automatically
-    async function browserFetch(currentPage) {
-      return page.evaluate(
+    // Click tab2 (매장재고 탭)
+    try {
+      await page.click('[id="tab-tab2"], #tab-tab2, [aria-controls="tab2"]', { timeout: 3000 });
+      console.log("[proxy] tab2 clicked");
+      await page.waitForTimeout(2000);
+    } catch { console.log("[proxy] tab2 click failed"); }
+
+    // Select district in the dropdown if intCd provided
+    if (intCd) {
+      try {
+        const selected = await page.evaluate((code) => {
+          for (const sel of document.querySelectorAll("select")) {
+            if ([...sel.options].some((o) => o.value === code)) {
+              sel.value = code;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }, intCd);
+        console.log(`[proxy] District select ${selected ? "ok" : "no match"}: ${intCd}`);
+        if (selected) await page.waitForTimeout(1000);
+      } catch (e) {
+        console.log("[proxy] District select error:", e.message);
+      }
+    }
+
+    // Click the search button to trigger the mapi call
+    try {
+      await page.click(
+        'button:has-text("검색"), button:has-text("찾기"), [class*="search"] button, .btn-search',
+        { timeout: 3000 }
+      );
+      console.log("[proxy] Search button clicked");
+    } catch { console.log("[proxy] Search button click failed"); }
+
+    // Wait for the intercepted mapi response
+    await page.waitForTimeout(6000);
+    console.log(`[proxy] Interception result: ${capturedStores.length} stores`);
+
+    // page.evaluate fetch helper — now has both prdm + mapi cf_clearance cookies
+    const browserFetch = async (currentPage) =>
+      page.evaluate(
         async ({ url, body }) => {
           try {
             const res = await fetch(url, {
@@ -86,44 +147,53 @@ async function fetchInventoryWithBrowser(pdNo, lat, lng, intCd = "") {
           }
         },
         {
-          url,
-          body: {
-            keyword: "",
-            pdNo,
-            curLttd: lat,
-            curLitd: lng,
-            geolocationAgrYn: "Y",
-            pkupYn: "",
-            intCd,
-            pageSize: 30,
-            currentPage,
-          },
+          url: INVENTORY_URL,
+          body: { keyword: "", pdNo, curLttd: lat, curLitd: lng, geolocationAgrYn: "Y", pkupYn: "", intCd, pageSize: 30, currentPage },
         }
       );
+
+    if (capturedStores.length === 0) {
+      // Interception yielded nothing; fall back to page.evaluate fetch.
+      // We now have mapi's own cf_clearance, so this may succeed where it didn't before.
+      console.log("[proxy] Falling back to page.evaluate fetch");
+      const first = await browserFetch(1);
+      console.log(`[proxy] Fallback page 1 status=${first.status}, ok=${first.ok}`);
+      if (!first.ok) {
+        throw new Error(`Daiso API returned ${first.status ?? first.error}`);
+      }
+      const stores = first.data?.data?.msStrVOList ?? [];
+      const total = first.data?.data?.intStrCont ?? stores.length;
+      console.log(`[proxy] Fallback total=${total}, page1=${stores.length}`);
+      const allStores = [...stores];
+      if (total > 30) {
+        const totalPages = Math.ceil(total / 30);
+        for (let p = 2; p <= totalPages; p++) {
+          const r = await browserFetch(p);
+          allStores.push(...(r?.data?.data?.msStrVOList ?? []));
+        }
+      }
+      return allStores;
     }
 
-    const first = await browserFetch(1);
-    console.log(`[proxy] page 1 status=${first.status}, ok=${first.ok}`);
-
-    if (!first.ok) {
-      throw new Error(`Daiso API returned ${first.status ?? first.error}`);
-    }
-
-    const stores = first.data?.data?.msStrVOList ?? [];
-    const total = first.data?.data?.intStrCont ?? stores.length;
-    console.log(`[proxy] total=${total}, page1 stores=${stores.length}`);
-
-    const allStores = [...stores];
-
-    if (total > 30) {
-      const totalPages = Math.ceil(total / 30);
-      for (let p = 2; p <= totalPages; p++) {
-        const r = await browserFetch(p);
-        allStores.push(...(r?.data?.data?.msStrVOList ?? []));
+    // Interception succeeded (page 1). Fetch remaining pages via page.evaluate
+    // if the total exceeds what the page initially loaded.
+    // We don't know the total from interception alone, so try page 2+ via browserFetch.
+    if (capturedStores.length === 30) {
+      console.log("[proxy] Captured exactly 30, checking for more pages via fetch");
+      try {
+        for (let p = 2; p <= 10; p++) {
+          const r = await browserFetch(p);
+          const more = r?.data?.data?.msStrVOList ?? [];
+          if (more.length === 0) break;
+          capturedStores.push(...more);
+          if (more.length < 30) break;
+        }
+      } catch (e) {
+        console.log("[proxy] Additional pages fetch failed:", e.message);
       }
     }
 
-    return allStores;
+    return capturedStores;
   } finally {
     await browser.close();
     releaseBrowser();
